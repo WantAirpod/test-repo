@@ -1,0 +1,20 @@
+{
+  "name": "blog-auto-generator",
+  "version": "1.0.0",
+  "description": "AI 기반 블로그 글 자동 생성 및 네이버 블로그 포스팅",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "generate": "node src/main.js --generate",
+    "post": "node src/main.js --post"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "openai": "^4.20.0"
+  },
+  "keywords": ["blog", "naver", "ai", "automation"],
+  "author": "",
+  "license": "MIT"
+}
