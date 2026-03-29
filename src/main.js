@@ -3,6 +3,7 @@ import { NaverBlogClient } from './naver-blog.js';
 import { TistoryBlogClient } from './tistory-blog.js';
 import { AIContentGenerator, generateTopicIdeas } from './ai-generator.js';
 import { ImageExtractor, extractProductInfo } from './image-extractor.js';
+import { BlogScraper, searchBlogImages } from './blog-scraper.js';
 
 // 환경변수 로드
 const config = {
@@ -163,10 +164,13 @@ async function generateAndPostTistory(topic, imageUrl) {
     return;
   }
 
-  // 이미지 추출 (URL이 제공된 경우)
   let images = [];
+  let references = [];
+
+  // 이미지 추출
   if (imageUrl) {
-    console.log('🖼️  이미지 추출 중...');
+    // 방법 1: 특정 URL에서 이미지 추출
+    console.log('🖼️  URL에서 이미지 추출 중...');
     try {
       const extractor = new ImageExtractor();
       await extractor.init();
@@ -176,12 +180,42 @@ async function generateAndPostTistory(topic, imageUrl) {
     } catch (error) {
       console.log(`   ⚠️ 이미지 추출 실패: ${error.message}`);
     }
+  } else {
+    // 방법 2: 자동으로 관련 블로그 검색하여 이미지 추출 (최소 10개 참고)
+    console.log('🔍 관련 블로그에서 이미지 및 참고자료 검색 중...');
+    try {
+      const scraper = new BlogScraper();
+      await scraper.init();
+      const searchResults = await scraper.searchAndExtract(topic, 10, 5); // 10개 블로그 참고
+      await scraper.close();
+
+      images = searchResults.images;
+      references = searchResults.references;
+
+      if (images.length > 0) {
+        console.log(`   ✓ ${images.length}개 이미지 수집 완료`);
+      }
+      if (references.length > 0) {
+        console.log(`   ✓ ${references.length}개 블로그 참고`);
+      }
+    } catch (error) {
+      console.log(`   ⚠️ 블로그 검색 실패: ${error.message}`);
+      console.log('   → 이미지 없이 진행합니다.');
+    }
   }
 
-  // 글 생성
+  // 글 생성 (참고 내용 포함)
   console.log('🤖 AI가 글을 생성 중...');
   const generator = new AIContentGenerator(config.openai.apiKey);
-  const post = await generator.generatePost(topic);
+
+  // 참고 내용이 있으면 주제에 포함
+  let enrichedTopic = topic;
+  if (references.length > 0) {
+    const refText = references.map(r => r.summary).join('\n\n');
+    enrichedTopic = `${topic}\n\n[참고할 내용]\n${refText}`;
+  }
+
+  const post = await generator.generatePost(enrichedTopic);
 
   console.log('\n📄 생성된 글:');
   console.log(`   제목: ${post.title}`);

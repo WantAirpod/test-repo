@@ -144,14 +144,15 @@ export class TistoryBlogClient {
     console.log('✍️  [3단계] 글 작성');
     console.log('========================================');
 
-    // 이미지가 있으면 HTML에 추가
+    // 이미지가 있으면 마크다운 형식으로 추가
     let htmlContent = content;
+    let markdownImages = '';
     if (images && images.length > 0) {
       console.log(`🖼️  ${images.length}개 이미지 포함`);
-      const imageHtml = images.map(url =>
-        `<p><img src="${url}" style="max-width:100%;" /></p>`
-      ).join('\n');
-      htmlContent = imageHtml + '\n\n' + content;
+      // 마크다운 이미지 문법으로 변환
+      markdownImages = images.map((url, i) =>
+        `![이미지${i + 1}](${url})`
+      ).join('\n\n');
     }
 
     try {
@@ -188,35 +189,147 @@ export class TistoryBlogClient {
       // 본문 입력
       console.log('📝 본문 입력...');
 
-      // 본문 영역 클릭
-      await this.page.evaluate(() => {
-        // 티스토리 에디터 본문 영역
-        const bodyEl = document.querySelector('#tinymce') ||
-                      document.querySelector('.contents_editor') ||
-                      document.querySelector('[contenteditable="true"]') ||
-                      document.querySelector('iframe');
-        if (bodyEl) {
-          bodyEl.click();
-          bodyEl.focus();
-        }
-      });
+      // HTML을 일반 텍스트로 변환 (줄바꿈 유지)
+      let plainContent = htmlContent
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<\/div>/gi, '\n')
+        .replace(/<\/h[1-6]>/gi, '\n\n')
+        .replace(/<h[1-6][^>]*>/gi, '## ')  // 소제목을 마크다운으로
+        .replace(/<li>/gi, '• ')
+        .replace(/<\/li>/gi, '\n')
+        .replace(/<strong>/gi, '**')
+        .replace(/<\/strong>/gi, '**')
+        .replace(/<b>/gi, '**')
+        .replace(/<\/b>/gi, '**')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 
+      // 이미지가 있으면 본문 중간중간에 삽입
+      if (markdownImages) {
+        const imageLines = markdownImages.split('\n\n');
+        const contentLines = plainContent.split('\n\n');
+        const totalParagraphs = contentLines.length;
+
+        // 이미지를 본문에 균등 분배
+        if (imageLines.length > 0 && totalParagraphs > 3) {
+          const interval = Math.floor(totalParagraphs / (imageLines.length + 1));
+          let insertedContent = [];
+          let imageIndex = 0;
+
+          for (let i = 0; i < contentLines.length; i++) {
+            insertedContent.push(contentLines[i]);
+
+            // 일정 간격마다 이미지 삽입
+            if (imageIndex < imageLines.length && (i + 1) % interval === 0 && i < contentLines.length - 1) {
+              insertedContent.push('\n' + imageLines[imageIndex] + '\n');
+              imageIndex++;
+            }
+          }
+
+          // 남은 이미지는 끝에 추가
+          while (imageIndex < imageLines.length) {
+            insertedContent.push('\n' + imageLines[imageIndex] + '\n');
+            imageIndex++;
+          }
+
+          plainContent = insertedContent.join('\n\n');
+        } else {
+          // 짧은 글이면 이미지를 끝에 추가
+          plainContent = plainContent + '\n\n' + markdownImages;
+        }
+
+        console.log(`   📷 ${imageLines.length}개 이미지 본문에 삽입`);
+      }
+
+      // 본문 영역으로 Tab 이동
+      console.log('   📝 본문 영역으로 이동...');
+      await this.page.keyboard.press('Tab');
       await this.sleep(500);
 
-      // iframe 에디터인 경우 처리
-      const frames = this.page.frames();
-      let editorFrame = frames.find(f => f.url().includes('editor') || f.name().includes('editor'));
+      // 에디터 영역 클릭 시도
+      const clicked = await this.page.evaluate(() => {
+        // 티스토리 에디터 본문 영역 찾기
+        const selectors = [
+          '.CodeMirror-scroll',
+          '.CodeMirror-code',
+          '.CodeMirror',
+          '#editor-content',
+          '.editor',
+          '[data-placeholder]',
+          '.mce-content-body',
+          'textarea',
+        ];
 
-      if (editorFrame) {
-        await editorFrame.evaluate((html) => {
-          const body = document.body || document.querySelector('[contenteditable]');
-          if (body) {
-            body.innerHTML = html;
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el) {
+            el.click();
+            el.focus();
+            return sel;
           }
-        }, htmlContent);
-      } else {
-        // 일반 에디터
-        await this.page.keyboard.type(content.replace(/<[^>]*>/g, '\n').trim(), { delay: 8 });
+        }
+        return null;
+      });
+
+      console.log(`   📝 에디터 감지: ${clicked || '없음, 키보드 입력 시도'}`);
+      await this.sleep(500);
+
+      // 클립보드를 통한 붙여넣기 시도
+      try {
+        await this.page.evaluate(async (text) => {
+          await navigator.clipboard.writeText(text);
+        }, plainContent);
+
+        // Cmd+V (Mac) 또는 Ctrl+V (Windows)
+        await this.page.keyboard.down('Meta');
+        await this.page.keyboard.press('v');
+        await this.page.keyboard.up('Meta');
+
+        console.log('   📝 클립보드 붙여넣기 시도');
+        await this.sleep(1000);
+      } catch (e) {
+        console.log('   ⚠️ 클립보드 실패, 직접 타이핑...');
+      }
+
+      // 내용이 입력되었는지 확인
+      const hasContent = await this.page.evaluate(() => {
+        const cm = document.querySelector('.CodeMirror');
+        if (cm && cm.CodeMirror) {
+          return cm.CodeMirror.getValue().length > 10;
+        }
+        const editor = document.querySelector('[contenteditable="true"]');
+        if (editor) {
+          return editor.innerText.length > 10;
+        }
+        return false;
+      });
+
+      // 입력 안됐으면 직접 타이핑
+      if (!hasContent) {
+        console.log('   📝 직접 타이핑 모드...');
+
+        // 줄 단위로 입력
+        const lines = plainContent.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.trim()) {
+            await this.page.keyboard.type(line, { delay: 3 });
+          }
+          if (i < lines.length - 1) {
+            await this.page.keyboard.press('Enter');
+          }
+
+          // 매 10줄마다 상태 출력
+          if (i > 0 && i % 10 === 0) {
+            console.log(`   ... ${i}/${lines.length} 줄 입력 중`);
+          }
+        }
       }
 
       console.log('   ✓ 본문 입력 완료');
