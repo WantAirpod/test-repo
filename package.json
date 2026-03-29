@@ -9,6 +9,7 @@
     "generate": "node src/main.js --generate",
     "post": "node src/main.js --post",
     "tistory": "node src/main.js --tistory",
+    "draft": "node src/main.js --draft",
     "chrome": "pkill -9 'Google Chrome' 2>/dev/null; sleep 1; /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.chrome-debug-profile &"
   },
   "dependencies": {

@@ -1,7 +1,41 @@
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import https from 'https';
+import http from 'http';
 
 puppeteer.use(StealthPlugin());
+
+/**
+ * 이미지 URL을 로컬 파일로 다운로드
+ */
+async function downloadImage(url, filepath) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    const file = createWriteStream(filepath);
+
+    protocol.get(url, (response) => {
+      // 리다이렉트 처리
+      if (response.statusCode === 301 || response.statusCode === 302) {
+        downloadImage(response.headers.location, filepath)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
+
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve(filepath);
+      });
+    }).on('error', (err) => {
+      unlinkSync(filepath);
+      reject(err);
+    });
+  });
+}
 
 /**
  * Puppeteer 기반 티스토리 블로그 자동 포스팅
@@ -11,6 +45,12 @@ export class TistoryBlogClient {
     this.blogName = config.blogName; // 블로그 주소 (예: myblog)
     this.browser = null;
     this.page = null;
+    this.tempDir = join(tmpdir(), 'blog-images');
+
+    // 임시 디렉토리 생성
+    if (!existsSync(this.tempDir)) {
+      mkdirSync(this.tempDir, { recursive: true });
+    }
   }
 
   async init() {
@@ -122,7 +162,10 @@ export class TistoryBlogClient {
     await this.page.goto(writeUrl, {
       waitUntil: 'networkidle2',
     });
-    await this.sleep(3000);
+    await this.sleep(2000);
+
+    // "작성 중인 글이 있습니다" 팝업 처리
+    await this.handleDraftPopup();
 
     // 에디터 로딩 확인
     const url = this.page.url();
@@ -138,21 +181,70 @@ export class TistoryBlogClient {
     await this.sleep(3000);
   }
 
+  /**
+   * 임시저장 글 팝업 처리
+   */
+  async handleDraftPopup() {
+    try {
+      // 팝업 감지 및 처리
+      const popupHandled = await this.page.evaluate(() => {
+        // 팝업 버튼들 찾기 (여러 가지 케이스)
+        const buttons = document.querySelectorAll('button, .btn, [role="button"]');
+
+        for (const btn of buttons) {
+          const text = btn.textContent.trim();
+
+          // "새로 작성" 또는 "삭제" 버튼 클릭 (기존 임시글 버리기)
+          if (text.includes('새로 작성') ||
+              text.includes('새글 작성') ||
+              text.includes('삭제') ||
+              text.includes('아니오') ||
+              text.includes('취소하고 새로')) {
+            btn.click();
+            return '새로 작성';
+          }
+        }
+
+        // 모달/다이얼로그 닫기 버튼
+        const closeBtn = document.querySelector('.modal-close, .popup-close, [class*="close"], .btn-close');
+        if (closeBtn) {
+          closeBtn.click();
+          return '닫기 버튼';
+        }
+
+        return null;
+      });
+
+      if (popupHandled) {
+        console.log(`   ✓ 임시저장 팝업 처리: ${popupHandled}`);
+        await this.sleep(1500);
+
+        // 팝업 처리 후 다시 새글 페이지로 이동할 수 있음
+        const currentUrl = this.page.url();
+        if (!currentUrl.includes('newpost')) {
+          await this.page.goto(`https://${this.blogName}.tistory.com/manage/newpost`, {
+            waitUntil: 'networkidle2',
+          });
+          await this.sleep(2000);
+        }
+      }
+    } catch (e) {
+      // 팝업이 없으면 무시
+    }
+  }
+
   async writePost(title, content, images = []) {
     console.log('');
     console.log('========================================');
     console.log('✍️  [3단계] 글 작성');
     console.log('========================================');
 
-    // 이미지가 있으면 마크다운 형식으로 추가
     let htmlContent = content;
-    let markdownImages = '';
+
+    // 이미지가 있으면 먼저 업로드
     if (images && images.length > 0) {
-      console.log(`🖼️  ${images.length}개 이미지 포함`);
-      // 마크다운 이미지 문법으로 변환
-      markdownImages = images.map((url, i) =>
-        `![이미지${i + 1}](${url})`
-      ).join('\n\n');
+      console.log(`🖼️  ${images.length}개 이미지 업로드 시작...`);
+      await this.uploadImages(images);
     }
 
     try {
@@ -210,41 +302,12 @@ export class TistoryBlogClient {
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
-      // 이미지가 있으면 본문 중간중간에 삽입
-      if (markdownImages) {
-        const imageLines = markdownImages.split('\n\n');
-        const contentLines = plainContent.split('\n\n');
-        const totalParagraphs = contentLines.length;
-
-        // 이미지를 본문에 균등 분배
-        if (imageLines.length > 0 && totalParagraphs > 3) {
-          const interval = Math.floor(totalParagraphs / (imageLines.length + 1));
-          let insertedContent = [];
-          let imageIndex = 0;
-
-          for (let i = 0; i < contentLines.length; i++) {
-            insertedContent.push(contentLines[i]);
-
-            // 일정 간격마다 이미지 삽입
-            if (imageIndex < imageLines.length && (i + 1) % interval === 0 && i < contentLines.length - 1) {
-              insertedContent.push('\n' + imageLines[imageIndex] + '\n');
-              imageIndex++;
-            }
-          }
-
-          // 남은 이미지는 끝에 추가
-          while (imageIndex < imageLines.length) {
-            insertedContent.push('\n' + imageLines[imageIndex] + '\n');
-            imageIndex++;
-          }
-
-          plainContent = insertedContent.join('\n\n');
-        } else {
-          // 짧은 글이면 이미지를 끝에 추가
-          plainContent = plainContent + '\n\n' + markdownImages;
-        }
-
-        console.log(`   📷 ${imageLines.length}개 이미지 본문에 삽입`);
+      // 이미지 업로드 실패 시 URL을 본문 끝에 추가
+      if (this.fallbackImageUrls && this.fallbackImageUrls.length > 0) {
+        const imageSection = '\n\n---\n\n📷 **이미지 URL (수동 삽입 필요)**\n\n' +
+          this.fallbackImageUrls.map((url, i) => `${i + 1}. ${url}`).join('\n');
+        plainContent += imageSection;
+        console.log(`   📷 ${this.fallbackImageUrls.length}개 이미지 URL 본문에 추가`);
       }
 
       // 본문 영역으로 Tab 이동
@@ -423,6 +486,126 @@ export class TistoryBlogClient {
       console.error('❌ 발행 중 오류:', error.message);
       return { success: false };
     }
+  }
+
+  /**
+   * 이미지 다운로드 및 업로드
+   */
+  async uploadImages(imageUrls) {
+    const uploadedCount = { success: 0, failed: 0 };
+
+    // 먼저 모든 이미지 다운로드
+    const downloadedFiles = [];
+    for (let i = 0; i < imageUrls.length; i++) {
+      const url = imageUrls[i];
+      try {
+        const ext = url.match(/\.(jpg|jpeg|png|gif|webp)/i)?.[1] || 'jpg';
+        const filename = `img_${Date.now()}_${i}.${ext}`;
+        const filepath = join(this.tempDir, filename);
+        await downloadImage(url, filepath);
+        downloadedFiles.push(filepath);
+      } catch (e) {
+        console.log(`   ⚠️ 이미지 ${i + 1} 다운로드 실패`);
+      }
+    }
+
+    if (downloadedFiles.length === 0) {
+      console.log('   ⚠️ 다운로드된 이미지가 없습니다.');
+      return;
+    }
+
+    console.log(`   📥 ${downloadedFiles.length}개 이미지 다운로드 완료`);
+
+    try {
+      // 티스토리 에디터에서 이미지 버튼 찾기 및 클릭
+      console.log('   📷 이미지 업로드 버튼 찾는 중...');
+
+      // 방법 1: 툴바의 이미지 버튼 클릭
+      const imageButtonClicked = await this.page.evaluate(() => {
+        // 티스토리 에디터 툴바에서 이미지 버튼 찾기
+        const selectors = [
+          'button[data-name="image"]',
+          'button[class*="image"]',
+          'button[title*="이미지"]',
+          'button[title*="사진"]',
+          '.btn-image',
+          '.tool-image',
+          '[class*="ImageButton"]',
+          'button svg[class*="image"]',
+        ];
+
+        for (const sel of selectors) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            btn.click();
+            return sel;
+          }
+        }
+
+        // 아이콘으로 찾기
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+          const svg = btn.querySelector('svg');
+          const img = btn.querySelector('img');
+          const title = btn.getAttribute('title') || '';
+          const ariaLabel = btn.getAttribute('aria-label') || '';
+
+          if (title.includes('이미지') || title.includes('사진') ||
+              ariaLabel.includes('이미지') || ariaLabel.includes('사진')) {
+            btn.click();
+            return 'title/aria 매칭';
+          }
+        }
+
+        return null;
+      });
+
+      if (imageButtonClicked) {
+        console.log(`   ✓ 이미지 버튼 클릭: ${imageButtonClicked}`);
+        await this.sleep(1500);
+      }
+
+      // 파일 input 찾기 (숨겨진 것도 포함)
+      // Puppeteer는 숨겨진 input도 uploadFile 가능
+      const fileInputs = await this.page.$$('input[type="file"]');
+
+      if (fileInputs.length > 0) {
+        // 마지막 file input 사용 (보통 새로 생성된 것)
+        const fileInput = fileInputs[fileInputs.length - 1];
+
+        // 모든 파일 한번에 업로드
+        await fileInput.uploadFile(...downloadedFiles);
+        console.log(`   📤 ${downloadedFiles.length}개 파일 업로드 중...`);
+
+        await this.sleep(3000); // 업로드 완료 대기
+
+        uploadedCount.success = downloadedFiles.length;
+        console.log(`   ✓ 이미지 업로드 완료!`);
+
+      } else {
+        console.log('   ⚠️ 파일 input을 찾을 수 없습니다.');
+        console.log('   → 이미지 URL을 본문에 포함합니다.');
+
+        // 대안: 이미지 URL을 마크다운으로 본문에 추가
+        this.fallbackImageUrls = imageUrls;
+        uploadedCount.failed = downloadedFiles.length;
+      }
+
+    } catch (error) {
+      console.log(`   ⚠️ 업로드 오류: ${error.message}`);
+      uploadedCount.failed = downloadedFiles.length;
+    }
+
+    // 임시 파일 정리
+    for (const filepath of downloadedFiles) {
+      try {
+        unlinkSync(filepath);
+      } catch (e) {}
+    }
+
+    // 모달/팝업 닫기
+    await this.page.keyboard.press('Escape');
+    await this.sleep(500);
   }
 
   async close() {

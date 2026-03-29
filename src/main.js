@@ -37,7 +37,11 @@ async function main() {
       break;
 
     case '--tistory':
-      await generateAndPostTistory(args[1], args[2]); // args[2] = 이미지 URL (선택)
+      await generateAndPostTistory(args[1], args[2], true); // 발행 O
+      break;
+
+    case '--draft':
+      await generateAndPostTistory(args[1], args[2], false); // 발행 X (작성만)
       break;
 
     case '--ideas':
@@ -148,11 +152,12 @@ async function generateAndPost(topic) {
  * 글 생성 + 티스토리 블로그 포스팅 (Puppeteer)
  * @param {string} topic - 주제
  * @param {string} imageUrl - 이미지를 추출할 URL (선택)
+ * @param {boolean} shouldPublish - 발행 여부 (false면 작성만)
  */
-async function generateAndPostTistory(topic, imageUrl) {
+async function generateAndPostTistory(topic, imageUrl, shouldPublish = true) {
   if (!topic) {
     console.log('❌ 주제를 입력해주세요: npm run tistory "주제"');
-    console.log('   이미지 포함: npm run tistory "주제" "이미지URL"');
+    console.log('   작성만 (발행X): npm run draft "주제"');
     return;
   }
 
@@ -249,14 +254,20 @@ async function generateAndPostTistory(topic, imageUrl) {
       return;
     }
 
-    // 5단계: 발행
-    const publishResult = await blogClient.publish();
-    if (publishResult.success) {
-      console.log('');
-      console.log('✅ 모든 작업이 완료되었습니다!');
+    // 5단계: 발행 (shouldPublish가 true일 때만)
+    if (shouldPublish) {
+      const publishResult = await blogClient.publish();
+      if (publishResult.success) {
+        console.log('');
+        console.log('✅ 모든 작업이 완료되었습니다!');
+      } else {
+        console.log('');
+        console.log('⚠️  발행을 완료하지 못했습니다. 브라우저에서 직접 확인해주세요.');
+      }
     } else {
       console.log('');
-      console.log('⚠️  발행을 완료하지 못했습니다. 브라우저에서 직접 확인해주세요.');
+      console.log('✅ 글 작성 완료! (발행은 하지 않았습니다)');
+      console.log('   브라우저에서 내용 확인 후 직접 발행하세요.');
     }
 
   } catch (error) {
