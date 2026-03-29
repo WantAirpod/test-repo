@@ -1,14 +1,18 @@
 import 'dotenv/config';
-import { NaverBlogClient, getAuthUrl } from './naver-blog.js';
+import { NaverBlogClient } from './naver-blog.js';
+import { TistoryBlogClient } from './tistory-blog.js';
 import { AIContentGenerator, generateTopicIdeas } from './ai-generator.js';
+import { ImageExtractor, extractProductInfo } from './image-extractor.js';
 
 // 환경변수 로드
 const config = {
   naver: {
-    clientId: process.env.NAVER_CLIENT_ID,
-    clientSecret: process.env.NAVER_CLIENT_SECRET,
-    accessToken: process.env.NAVER_BLOG_ACCESS_TOKEN,
+    naverId: process.env.NAVER_ID,
+    naverPw: process.env.NAVER_PW,
     blogId: process.env.BLOG_ID,
+  },
+  tistory: {
+    blogName: process.env.TISTORY_BLOG, // 티스토리 블로그 이름 (예: myblog)
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
@@ -31,12 +35,12 @@ async function main() {
       await generateAndPost(args[1]);
       break;
 
-    case '--ideas':
-      await showTopicIdeas(args[1]);
+    case '--tistory':
+      await generateAndPostTistory(args[1], args[2]); // args[2] = 이미지 URL (선택)
       break;
 
-    case '--auth':
-      showAuthUrl();
+    case '--ideas':
+      await showTopicIdeas(args[1]);
       break;
 
     case '--help':
@@ -69,7 +73,7 @@ async function generatePost(topic) {
 }
 
 /**
- * 글 생성 + 네이버 블로그 포스팅
+ * 글 생성 + 네이버 블로그 포스팅 (Puppeteer)
  */
 async function generateAndPost(topic) {
   if (!topic) {
@@ -78,9 +82,9 @@ async function generateAndPost(topic) {
   }
 
   // 설정 확인
-  if (!config.naver.accessToken) {
-    console.log('❌ 네이버 Access Token이 설정되지 않았습니다.');
-    console.log('   먼저 --auth로 인증 URL을 확인하고 토큰을 발급받으세요.');
+  if (!config.naver.naverId || !config.naver.naverPw) {
+    console.log('❌ 네이버 로그인 정보가 설정되지 않았습니다.');
+    console.log('   .env 파일에 NAVER_ID와 NAVER_PW를 설정하세요.');
     return;
   }
 
@@ -89,14 +93,145 @@ async function generateAndPost(topic) {
   const generator = new AIContentGenerator(config.openai.apiKey);
   const post = await generator.generatePost(topic);
 
-  // 네이버 블로그 포스팅
-  console.log('📤 네이버 블로그에 포스팅 중...');
-  const blogClient = new NaverBlogClient(config.naver);
-  const result = await blogClient.writePost(post.title, post.content);
-
-  console.log('\n🎉 포스팅 완료!');
+  console.log('\n📄 생성된 글:');
   console.log(`   제목: ${post.title}`);
-  console.log(`   URL: https://blog.naver.com/${config.naver.blogId}`);
+
+  // 네이버 블로그 포스팅 (Puppeteer)
+  console.log('\n📤 네이버 블로그에 포스팅 시작...');
+  console.log('');
+  console.log('╔════════════════════════════════════════════════════╗');
+  console.log('║  ⚠️  자동화 진행 중 브라우저를 건드리지 마세요!      ║');
+  console.log('║  ⚠️  캡차/인증이 필요할 때만 브라우저에서 처리하세요. ║');
+  console.log('╚════════════════════════════════════════════════════╝');
+
+  const blogClient = new NaverBlogClient(config.naver);
+
+  try {
+    // 1단계: 브라우저 시작
+    await blogClient.init();
+
+    // 2단계: 로그인
+    await blogClient.login();
+
+    // 3단계: 글쓰기 페이지로 이동
+    await blogClient.goToEditor();
+
+    // 4단계: 글 작성
+    const writeResult = await blogClient.writePost(post.title, post.content);
+    if (!writeResult.success) {
+      console.log('❌ 글 작성 실패. 브라우저에서 직접 작성해주세요.');
+      return;
+    }
+
+    // 5단계: 발행
+    const publishResult = await blogClient.publish();
+    if (publishResult.success) {
+      console.log('');
+      console.log('✅ 모든 작업이 완료되었습니다!');
+    } else {
+      console.log('');
+      console.log('⚠️  발행을 완료하지 못했습니다. 브라우저에서 직접 확인해주세요.');
+    }
+
+  } catch (error) {
+    console.error('❌ 포스팅 중 오류 발생:', error.message);
+    console.log('   브라우저에서 직접 확인 후 처리해주세요.');
+  }
+
+  // 브라우저는 열어둠 (수동 확인용)
+  console.log('');
+  console.log('💡 완료 후 브라우저를 닫으면 프로그램이 종료됩니다.');
+}
+
+/**
+ * 글 생성 + 티스토리 블로그 포스팅 (Puppeteer)
+ * @param {string} topic - 주제
+ * @param {string} imageUrl - 이미지를 추출할 URL (선택)
+ */
+async function generateAndPostTistory(topic, imageUrl) {
+  if (!topic) {
+    console.log('❌ 주제를 입력해주세요: npm run tistory "주제"');
+    console.log('   이미지 포함: npm run tistory "주제" "이미지URL"');
+    return;
+  }
+
+  // 설정 확인
+  if (!config.tistory.blogName) {
+    console.log('❌ 티스토리 블로그 이름이 설정되지 않았습니다.');
+    console.log('   .env 파일에 TISTORY_BLOG를 설정하세요.');
+    console.log('   예: TISTORY_BLOG=myblog  (https://myblog.tistory.com)');
+    return;
+  }
+
+  // 이미지 추출 (URL이 제공된 경우)
+  let images = [];
+  if (imageUrl) {
+    console.log('🖼️  이미지 추출 중...');
+    try {
+      const extractor = new ImageExtractor();
+      await extractor.init();
+      images = await extractor.extractImages(imageUrl, 5);
+      await extractor.close();
+      console.log(`   ✓ ${images.length}개 이미지 추출 완료`);
+    } catch (error) {
+      console.log(`   ⚠️ 이미지 추출 실패: ${error.message}`);
+    }
+  }
+
+  // 글 생성
+  console.log('🤖 AI가 글을 생성 중...');
+  const generator = new AIContentGenerator(config.openai.apiKey);
+  const post = await generator.generatePost(topic);
+
+  console.log('\n📄 생성된 글:');
+  console.log(`   제목: ${post.title}`);
+  if (images.length > 0) {
+    console.log(`   이미지: ${images.length}개`);
+  }
+
+  // 티스토리 블로그 포스팅
+  console.log('\n📤 티스토리 블로그에 포스팅 시작...');
+  console.log('');
+  console.log('╔════════════════════════════════════════════════════╗');
+  console.log('║  ⚠️  자동화 진행 중 브라우저를 건드리지 마세요!      ║');
+  console.log('╚════════════════════════════════════════════════════╝');
+
+  const blogClient = new TistoryBlogClient(config.tistory);
+
+  try {
+    // 1단계: 브라우저 연결
+    await blogClient.init();
+
+    // 2단계: 로그인 확인
+    await blogClient.login();
+
+    // 3단계: 글쓰기 페이지로 이동
+    await blogClient.goToEditor();
+
+    // 4단계: 글 작성 (이미지 포함)
+    const writeResult = await blogClient.writePost(post.title, post.content, images);
+    if (!writeResult.success) {
+      console.log('❌ 글 작성 실패. 브라우저에서 직접 작성해주세요.');
+      return;
+    }
+
+    // 5단계: 발행
+    const publishResult = await blogClient.publish();
+    if (publishResult.success) {
+      console.log('');
+      console.log('✅ 모든 작업이 완료되었습니다!');
+    } else {
+      console.log('');
+      console.log('⚠️  발행을 완료하지 못했습니다. 브라우저에서 직접 확인해주세요.');
+    }
+
+  } catch (error) {
+    console.error('❌ 포스팅 중 오류 발생:', error.message);
+    console.log('   브라우저에서 직접 확인 후 처리해주세요.');
+  }
+
+  console.log('');
+  console.log('💡 완료 후 탭을 닫아도 됩니다.');
 }
 
 /**
@@ -118,25 +253,6 @@ async function showTopicIdeas(keyword) {
 }
 
 /**
- * 네이버 인증 URL 표시
- */
-function showAuthUrl() {
-  if (!config.naver.clientId) {
-    console.log('❌ NAVER_CLIENT_ID가 설정되지 않았습니다.');
-    return;
-  }
-
-  const authUrl = getAuthUrl(
-    config.naver.clientId,
-    'http://localhost:3000/callback'
-  );
-
-  console.log('\n🔐 네이버 로그인 인증 URL:');
-  console.log(authUrl);
-  console.log('\n위 URL로 접속하여 인증 후, 콜백 URL의 code 파라미터를 사용하세요.');
-}
-
-/**
  * 도움말 표시
  */
 function showHelp() {
@@ -146,16 +262,25 @@ function showHelp() {
 ╚════════════════════════════════════════════════════╝
 
 사용법:
-  npm run generate "주제"    AI로 글 생성 (미리보기)
-  npm run post "주제"        AI로 글 생성 + 네이버 블로그 포스팅
+  npm run chrome              Chrome 디버깅 모드 시작 (먼저 실행!)
+  npm run post "주제"         네이버 블로그 포스팅
+  npm run tistory "주제"      티스토리 블로그 포스팅
+  npm run generate "주제"     AI로 글 생성 (미리보기)
 
 추가 명령:
   node src/main.js --ideas "키워드"   주제 아이디어 추천
-  node src/main.js --auth             네이버 인증 URL 확인
 
-설정:
-  .env 파일에 API 키를 설정하세요.
-  자세한 내용은 README.md를 참고하세요.
+설정 (.env 파일):
+  # 공통
+  OPENAI_API_KEY=sk-xxx
+
+  # 네이버 블로그
+  NAVER_ID=아이디
+  NAVER_PW=비밀번호
+  BLOG_ID=블로그아이디
+
+  # 티스토리 블로그
+  TISTORY_BLOG=블로그이름    (예: myblog → https://myblog.tistory.com)
   `);
 }
 

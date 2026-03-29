@@ -10,16 +10,12 @@ export class AIContentGenerator {
 
   /**
    * 블로그 글 생성
-   * @param {string} topic - 글 주제
-   * @param {object} options - 추가 옵션
-   * @returns {Promise<{title: string, content: string}>}
    */
   async generatePost(topic, options = {}) {
     const {
-      style = 'informative',  // informative, casual, professional
-      length = 'medium',       // short, medium, long
+      style = 'informative',
+      length = 'medium',
       includeEmoji = true,
-      language = 'ko',
     } = options;
 
     const lengthGuide = {
@@ -60,9 +56,6 @@ ${includeEmoji ? '적절한 이모지를 포함해주세요.' : '이모지는 �
 
   /**
    * 여러 주제로 글 일괄 생성
-   * @param {string[]} topics - 주제 목록
-   * @param {object} options - 추가 옵션
-   * @returns {Promise<Array<{title: string, content: string}>>}
    */
   async generateBulkPosts(topics, options = {}) {
     const results = [];
@@ -71,8 +64,6 @@ ${includeEmoji ? '적절한 이모지를 포함해주세요.' : '이모지는 �
       console.log(`📝 생성 중: ${topic}`);
       const post = await this.generatePost(topic, options);
       results.push(post);
-
-      // API 속도 제한 대응
       await this.sleep(1000);
     }
 
@@ -83,7 +74,6 @@ ${includeEmoji ? '적절한 이모지를 포함해주세요.' : '이모지는 �
    * 네이버 블로그용 HTML 포맷팅
    */
   formatForNaverBlog(content) {
-    // 기본적인 HTML 정리
     let formatted = content
       .replace(/\n\n/g, '</p><p>')
       .replace(/\n/g, '<br>');
